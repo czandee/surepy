@@ -241,6 +241,7 @@ async def devices(ctx: click.Context, token: str | None) -> None:
         table.add_column("Name", style="bold")
         table.add_column("Type", style="")
         table.add_column("Serial", style="")
+        table.add_column("Mode", style="")
 
         # sorted_devices = sorted(devices, key=lambda x: int(devices[x]["household_id"]))
 
@@ -255,6 +256,7 @@ async def devices(ctx: click.Context, token: str | None) -> None:
                 str(device.name),
                 str(device.type.name.replace("_", " ").title()),
                 str(device.serial) or "-",
+                str(device.state),
             )
 
         console.print(table, "", sep="\n")

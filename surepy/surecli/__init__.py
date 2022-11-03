@@ -473,5 +473,21 @@ async def position(
         # await sp.sac.close_session()
 
 
+@cli.command()
+@click.pass_context
+@click.option(
+    "-d", "--device", "device_id", required=True, type=int, help="id of the sure petcare device"
+)
+@click.option(
+    "-t", "--token", required=False, type=str, help="sure petcare api token", hide_input=True
+)
+@coro
+async def status(ctx: click.Context, device_id: int, token: str | None = None) -> None:
+    """get device status (lock mode) of given device as plain text"""
+    token = token if token else ctx.obj.get("token", None)
+    sp = Surepy(auth_token=str(token))
+    device: Flap = await sp.get_device(device_id=device_id)
+    console.print(f'{device.state.name}')
+
 if __name__ == "__main__":
     cli(obj={})

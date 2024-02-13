@@ -11,7 +11,7 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from datetime import datetime
+from datetime import datetime, time
 from http import HTTPStatus
 from http.client import HTTPException
 from logging import Logger
@@ -32,9 +32,11 @@ from .const import (
     AUTHORIZATION,
     BASE_RESOURCE,
     CONNECTION,
+    CONTENT_TYPE,
     CONTENT_TYPE_JSON,
     CONTENT_TYPE_TEXT_PLAIN,
     CONTROL_RESOURCE,
+    DEVICE_TAG_RESOURCE,
     ETAG,
     HOST,
     HTTP_HEADER_X_REQUESTED_WITH,
@@ -66,7 +68,7 @@ def token_seems_valid(token: str) -> bool:
         bool: True if ``token`` seems valid
     """
     return (
-        (token is not None) and token.isascii() and token.isprintable() and (320 < len(token) < 448)
+        (token is not None) and token.isascii() and token.isprintable() and (320 < len(token))
     )
 
 
@@ -142,6 +144,7 @@ class SureAPIClient:
         return {
             HOST: "app.api.surehub.io",
             CONNECTION: "keep-alive",
+            CONTENT_TYPE: CONTENT_TYPE_JSON,
             ACCEPT: f"{CONTENT_TYPE_JSON}, {CONTENT_TYPE_TEXT_PLAIN}, */*",
             ORIGIN: "https://surepetcare.io",
             USER_AGENT: user_agent if user_agent else SUREPY_USER_AGENT,
@@ -165,11 +168,10 @@ class SureAPIClient:
 
         try:
             raw_response: aiohttp.ClientResponse = await session.post(
-                url=AUTH_RESOURCE, data=authentication_data, headers=self._generate_headers()
+                url=AUTH_RESOURCE, json=authentication_data, headers=self._generate_headers()
             )
 
             if raw_response.status == HTTPStatus.OK:
-
                 response: dict[str, Any] = await raw_response.json()
 
                 if "data" in response and "token" in response["data"]:
@@ -204,6 +206,7 @@ class SureAPIClient:
         method: str,
         resource: str,
         data: dict[str, Any] | None = None,
+        json: dict[str, Any] | None = None,
         second_try: bool = False,
         **_: Any,
     ) -> dict[str, Any] | None:
@@ -214,10 +217,13 @@ class SureAPIClient:
         # if data:
         #     logger.debug("🐾   with data: %s", data)
 
+        if json and not data:
+            data = json
+
         if not self._auth_token:
             self._auth_token = await self.get_token()
 
-        if method not in ["GET", "PUT", "POST"]:
+        if method not in ["GET", "PUT", "POST", "DELETE"]:
             raise HTTPException(f"unknown http method: {method}")
 
         response_data = None
@@ -235,11 +241,10 @@ class SureAPIClient:
 
                 await session.options(resource, headers=headers)
                 response: aiohttp.ClientResponse = await session.request(
-                    method, resource, headers=headers, data=data
+                    method, resource, headers=headers, json=data
                 )
 
                 if response.status == HTTPStatus.OK or response.status == HTTPStatus.CREATED:
-
                     self.resources[resource] = response_data = await response.json()
 
                     if ETAG in response.headers:
@@ -262,7 +267,7 @@ class SureAPIClient:
                     )
                     self._auth_token = None
                     if not second_try:
-                        token_refreshed = self.get_token()
+                        token_refreshed = await self.get_token()
                         if token_refreshed:
                             await self.call(method="GET", resource=resource, second_try=True)
 
@@ -287,6 +292,10 @@ class SureAPIClient:
                     resource.replace("https://", ""),
                     responselen,
                 )
+
+                if method == "DELETE" and response.status == HTTPStatus.NO_CONTENT:
+                    # TODO: this does not return any data, is there a better way?
+                    return "DELETE 204 No Content"
 
                 return response_data
 
@@ -324,7 +333,6 @@ class SureAPIClient:
         if (response := await self.call(method="POST", resource=resource, data=data)) and (
             response_data := response.get("data")
         ):
-
             desired_state = data.get("where")
             state = response_data.get("where")
 
@@ -361,7 +369,6 @@ class SureAPIClient:
                 method="PUT", resource=resource, device_id=device_id, data=data
             )
         ) and (response_data := response.get("data")):
-
             desired_state = data.get("locking")
             state = response_data.get("locking")
 
@@ -371,3 +378,53 @@ class SureAPIClient:
 
         # return None
         raise SurePetcareError("ERROR (UN)LOCKING DEVICE - PLEASE CHECK IMMEDIATELY!")
+
+    async def set_curfew(
+        self, device_id: int, lock_time: time, unlock_time: time
+    ) -> dict[str, Any] | None:
+        """Set the flap curfew times, using the household's timezone"""
+
+        resource = CONTROL_RESOURCE.format(BASE_RESOURCE=BASE_RESOURCE, device_id=device_id)
+
+        data = {
+            "curfew": [
+                {
+                    "lock_time": lock_time.strftime("%H:%M"),
+                    "unlock_time": unlock_time.strftime("%H:%M"),
+                    "enabled": True,
+                }
+            ]
+        }
+
+        if (
+            response := await self.call(
+                method="PUT", resource=resource, device_id=device_id, json=data
+            )
+        ) and (response_data := response.get("data")):
+            desired_state = data.get("curfew")
+            state = response_data.get("curfew")
+
+            # check if the state is correctly updated
+            if state == desired_state:
+                return response
+
+        # return None
+        raise SurePetcareError("ERROR SETTING CURFEW - PLEASE CHECK IMMEDIATELY!")
+
+    async def _add_tag_to_device(self, device_id: int, tag_id: int) -> dict[str, Any] | None:
+        """Add the specified tag ID to the specified device ID"""
+        resource = DEVICE_TAG_RESOURCE.format(
+            BASE_RESOURCE=BASE_RESOURCE, device_id=device_id, tag_id=tag_id
+        )
+
+        if response := await self.call(method="PUT", resource=resource):
+            return response
+
+    async def _remove_tag_from_device(self, device_id: int, tag_id: int) -> dict[str, Any] | None:
+        """Removes the specified tag ID from the specified device ID"""
+        resource = DEVICE_TAG_RESOURCE.format(
+            BASE_RESOURCE=BASE_RESOURCE, device_id=device_id, tag_id=tag_id
+        )
+
+        if response := await self.call(method="DELETE", resource=resource):
+            return response
